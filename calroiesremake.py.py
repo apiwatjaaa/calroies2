@@ -1,17 +1,17 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
 ║       BMR & TDEE Calculator + AI Food Analyzer (Streamlit)       ║
-║  ใช้สมการ Harris-Benedict + Claude Vision API วิเคราะห์รูปอาหาร  ║
+║  ใช้สมการ Harris-Benedict + Gemini Vision API วิเคราะห์รูปอาหาร  ║
 ╚══════════════════════════════════════════════════════════════════╝
 วิธีรัน:
-    1. pip install streamlit anthropic
+    1. pip install streamlit google-generativeai
     2. streamlit run calorie_calculator.py
 
-⚠️  ต้องมี Anthropic API Key → https://console.anthropic.com
+⚠️  ต้องมี Gemini API Key (ฟรี!) → https://aistudio.google.com/app/apikey
 """
 
 import streamlit as st
-import anthropic   # Anthropic Python SDK — pip install anthropic
+import google.generativeai as genai  # Google Gemini SDK — pip install google-generativeai
 import base64      # แปลงรูปภาพเป็น base64 string เพื่อส่งให้ API
 import json        # แปลง JSON string จาก AI response เป็น Python dict
 import re          # Regular Expression — ใช้หา JSON ในข้อความ
@@ -132,32 +132,31 @@ def get_calorie_goal(tdee: float) -> dict:
 
 def analyze_food_image(image_bytes: bytes, api_key: str) -> dict:
     """
-    ส่งรูปภาพอาหารให้ Claude วิเคราะห์แคลอรีและ Macronutrients
+    ส่งรูปภาพอาหารให้ Gemini วิเคราะห์แคลอรีและ Macronutrients
 
     วิธีทำงาน:
-    1. แปลงรูปภาพเป็น base64 string (เพราะ API รับข้อมูลเป็น text ไม่ใช่ไฟล์โดยตรง)
-    2. สร้าง client ของ Anthropic และส่ง request พร้อมรูปและ prompt
+    1. ตั้งค่า Gemini API Key
+    2. สร้าง model และส่งรูป + prompt ไปพร้อมกัน (Gemini รับ bytes โดยตรงได้)
     3. Parse JSON ที่ AI ตอบกลับมาเป็น Python dict
 
     Parameters:
         image_bytes : ข้อมูลรูปภาพในรูปแบบ bytes (จาก st.file_uploader)
-        api_key     : Anthropic API Key
+        api_key     : Gemini API Key (รับฟรีที่ aistudio.google.com)
 
     Returns:
         dict ผลวิเคราะห์ มีคีย์: food_name, portion, calories,
              protein_g, carbs_g, fat_g, confidence, notes
     """
-    # ── Step 1: แปลงรูปเป็น base64 ──
-    # base64 คือการเข้ารหัสข้อมูล binary → ASCII text เพื่อส่งผ่าน JSON ได้
-    image_base64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    # ── Step 1: ตั้งค่า Gemini API Key ──
+    genai.configure(api_key=api_key)
 
-    # ── Step 2: สร้าง Anthropic client ──
-    client = anthropic.Anthropic(api_key=api_key)
+    # ── Step 2: สร้าง Gemini model ที่รองรับ Vision (มองเห็นรูปภาพได้) ──
+    # gemini-1.5-flash = รุ่นที่เร็วและฟรี รองรับการวิเคราะห์รูปภาพ
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
-    # ── Step 3: เขียน Prompt ที่บอก AI ว่าให้ทำอะไร ──
-    # "System prompt" คือคำสั่งพื้นฐานที่บอก AI ว่าตัวเองคือใคร ทำหน้าที่อะไร
-    system_prompt = """คุณคือผู้เชี่ยวชาญด้านโภชนาการและวิเคราะห์แคลอรีอาหาร
-ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอกจาก JSON
+    # ── Step 3: เตรียม prompt ──
+    prompt = """คุณคือผู้เชี่ยวชาญด้านโภชนาการและวิเคราะห์แคลอรีอาหาร
+วิเคราะห์อาหารในรูปนี้แล้วตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น ห้ามมี ```json
 รูปแบบ JSON ที่ต้องการ:
 {
   "food_name": "ชื่ออาหาร (ภาษาไทย)",
@@ -170,48 +169,25 @@ def analyze_food_image(image_bytes: bytes, api_key: str) -> dict:
   "notes": "หมายเหตุสั้นๆ เช่น ปัจจัยที่ทำให้แคลอรีแตกต่างกัน"
 }"""
 
-    # ── Step 4: เรียก Claude API พร้อมส่งรูป ──
-    # messages คือประวัติการสนทนา (list of dict)
-    # content ในแต่ละ message สามารถเป็น text หรือ image ก็ได้
-    response = client.messages.create(
-        model="claude-opus-4-5",          # ใช้ claude-opus-4-5 ที่รองรับ Vision
-        max_tokens=500,
-        system=system_prompt,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        # ส่งรูปภาพในรูปแบบ base64
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",  # หรือ image/png
-                            "data": image_base64,
-                        },
-                    },
-                    {
-                        # Prompt ที่ถามเกี่ยวกับรูป
-                        "type": "text",
-                        "text": "วิเคราะห์อาหารในรูปนี้ บอกชื่ออาหาร แคลอรี และ Macronutrients ตามรูปแบบ JSON ที่กำหนด",
-                    },
-                ],
-            }
-        ],
-    )
+    # ── Step 4: สร้าง image part สำหรับส่งให้ Gemini ──
+    # Gemini รับรูปในรูปแบบ dict ที่มี mime_type และ data (bytes)
+    image_part = {
+        "mime_type": "image/jpeg",
+        "data": image_bytes,   # ส่ง bytes โดยตรง ไม่ต้องแปลงเป็น base64
+    }
 
-    # ── Step 5: แปลง response เป็น Python dict ──
-    # response.content[0].text คือข้อความที่ AI ตอบกลับมา (JSON string)
-    raw_text = response.content[0].text
+    # ── Step 5: เรียก Gemini API พร้อมส่งรูปและ prompt ──
+    # generate_content รับ list ของ content (รูป + ข้อความ)
+    response = model.generate_content([image_part, prompt])
 
-    # ใช้ regex หา JSON ในข้อความ (กรณี AI แนบข้อความอื่นมาด้วย)
-    # r'\{.*\}' หมายถึง: หา pattern ที่ขึ้นต้นด้วย { และลงท้ายด้วย }
-    # re.DOTALL ทำให้ . จับ newline ด้วย
+    # ── Step 6: แปลง response เป็น Python dict ──
+    raw_text = response.text
+
+    # ใช้ regex หา JSON ในข้อความ (กรณี AI แนบ markdown หรือข้อความอื่นมาด้วย)
     json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     if json_match:
         result = json.loads(json_match.group())
     else:
-        # ถ้าหา JSON ไม่เจอ ให้ raise error ชัดๆ
         raise ValueError(f"AI ไม่ได้ตอบเป็น JSON: {raw_text}")
 
     return result
@@ -380,20 +356,20 @@ with tab_calc:
 # ══════════════════════════════════════════════════════════════
 with tab_food:
     st.markdown('<div class="section-title">🤖 วิเคราะห์แคลอรีอาหารด้วย AI</div>', unsafe_allow_html=True)
-    st.write("อัปโหลดรูปอาหาร แล้วให้ Claude AI บอกชื่ออาหาร แคลอรี และ Macronutrients ให้เลย!")
+    st.write("อัปโหลดรูปอาหาร แล้วให้ Gemini AI บอกชื่ออาหาร แคลอรี และ Macronutrients ให้เลย! (ฟรี 🎉)")
 
     # ── กรอก API Key ──
     # st.text_input + type="password" ทำให้ข้อความถูกซ่อน (แสดงเป็น ***)
     api_key = st.text_input(
-        "🔑 Anthropic API Key",
+        "🔑 Gemini API Key (ฟรี!)",
         type="password",
-        placeholder="sk-ant-api03-...",
-        help="รับ API Key ฟรีได้ที่ https://console.anthropic.com",
+        placeholder="AIza...",
+        help="รับ API Key ฟรีได้ที่ https://aistudio.google.com/app/apikey",
     )
 
     # แสดงลิงก์ขอ API Key ถ้ายังไม่มี
     if not api_key:
-        st.info("💡 ยังไม่มี API Key? รับฟรีได้ที่ [console.anthropic.com](https://console.anthropic.com) → สร้าง account → API Keys")
+        st.info("💡 ยังไม่มี API Key? รับฟรีได้ที่ [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → Sign in → Create API Key")
 
     st.markdown("---")
 
@@ -435,7 +411,7 @@ with tab_food:
 
         if uploaded_file is not None and analyze_btn and api_key:
             # แสดง spinner ระหว่างรอ AI ตอบ
-            with st.spinner("🤖 Claude กำลังวิเคราะห์อาหาร..."):
+            with st.spinner("🤖 Gemini กำลังวิเคราะห์อาหาร..."):
                 try:
                     # อ่านไฟล์เป็น bytes
                     # .read() คืนค่าเป็น bytes object
@@ -512,12 +488,14 @@ with tab_food:
                     st.progress(min(percent / 100, 1.0))
                     st.write(f"อาหารจานนี้ = **{food_kcal:,} kcal** = **{percent:.1f}%** ของ TDEE คุณ ({tdee_for_compare:,.0f} kcal)")
 
-                except anthropic.AuthenticationError:
-                    st.error("❌ API Key ไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง")
-                except anthropic.RateLimitError:
-                    st.error("❌ เกิน Rate Limit ของ API กรุณารอสักครู่แล้วลองใหม่")
                 except Exception as e:
-                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+                    err = str(e)
+                    if "API_KEY_INVALID" in err or "invalid" in err.lower():
+                        st.error("❌ API Key ไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง")
+                    elif "quota" in err.lower() or "limit" in err.lower():
+                        st.error("❌ เกิน Rate Limit กรุณารอสักครู่แล้วลองใหม่")
+                    else:
+                        st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
 
         elif uploaded_file is None:
             # แสดง placeholder ถ้ายังไม่ได้อัปโหลด
@@ -536,7 +514,7 @@ with tab_food:
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("""
 <div style="text-align:center; color:#aaa; font-size:0.8rem; padding:16px 0">
-    🔬 ใช้สมการ <b>Harris-Benedict (Revised)</b> | Macro อ้างอิง <b>AMDR</b> | AI วิเคราะห์ภาพด้วย <b>Claude Vision API</b><br>
+    🔬 ใช้สมการ <b>Harris-Benedict (Revised)</b> | Macro อ้างอิง <b>AMDR</b> | AI วิเคราะห์ภาพด้วย <b>Gemini Vision API</b><br>
     ⚠️ ผลลัพธ์เป็นการประมาณการเท่านั้น ควรปรึกษานักโภชนาการสำหรับแผนที่เหมาะกับคุณ
 </div>
 """, unsafe_allow_html=True)
