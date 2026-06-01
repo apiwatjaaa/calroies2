@@ -152,7 +152,7 @@ def analyze_food_image(image_bytes: bytes, api_key: str) -> dict:
 
     # ── Step 2: สร้าง Gemini model ที่รองรับ Vision (มองเห็นรูปภาพได้) ──
     # gemini-1.5-flash = รุ่นที่เร็วและฟรี รองรับการวิเคราะห์รูปภาพ
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-pro")
 
     # ── Step 3: เตรียม prompt ──
     prompt = """คุณคือผู้เชี่ยวชาญด้านโภชนาการและวิเคราะห์แคลอรีอาหาร
